@@ -1,0 +1,303 @@
+---
+title: 'Data 622: Introduction to Machine Learning'
+subtitle: 'Spring 2020 - Homework #2'
+author: "Amber Ferger"
+date: "3/19/2021"
+output:
+  html_document:
+    toc: TRUE
+    toc_depth: 4
+
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(error=FALSE, warning=FALSE, message=FALSE)
+set.seed(12)
+```
+
+```{r libraries, include=FALSE}
+library(dplyr)
+library(palmerpenguins)
+library(mice)
+library(caret)
+library(MASS)
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+#library(e1071)
+```
+
+# Data Exploration
+
+```{r inital_data}
+penguins_df <- palmerpenguins::penguins %>% 
+  dplyr::select(-year)
+
+str(penguins_df)
+```
+
+The penguins dataset is composed of `r nrow(penguins_df)` datapoints and has one response variable (`species`) and seven explanatory variables (`island`, `bill_length_mm`, `bill_depth_mm`, `flipper_length_mm`, `body_mass_g`, `sex`, and `year`). 
+
+Intuitively, we know that the `year` variable shouldn't make a difference in the penguin species, so we will remove it from the dataset. We are now left with two categorical variables (`island` and `sex`) and four numeric variables (`bill_length_mm`, `bill_depth_mm`, `flipper_length_mm` and`body_mass_g`).
+
+## Dealing with Missing Values
+``` {r summarize_data}
+summary(penguins_df)
+```
+
+From the summary statistics, we can see that 5 out of 6 of the explanatory variables have at least some null values. It doesn't make sense to impute the null records of our categorical variable (`sex`), so we will remove them from our dataset. We will impute the missing data of the numerical values using the Multivariate imputation by chained equations (MICE) method. Multiple imputation involves creating multiple predictions for each missing value, helping to account for the uncertainty in the individual imputations. 
+
+```{r impute_missing}
+# remove records with null sex values
+penguins_df <- penguins_df %>% filter(!is.na(sex))
+
+# impute null values using MICE method
+penguins_df <- complete(mice(data = penguins_df,
+                         method = "pmm", print = FALSE), 3)
+```
+
+
+## Subsetting the Data
+One of the assumptions for LDA, QDA, and Naive Bayes is that that each predictor variable is normally distributed. This implies non-categorical variables, so we will eliminate them from the dataset. 
+
+```{r subsetData}
+
+penguins_df <- penguins_df %>%
+  dplyr::select(-island, -sex)
+
+```
+
+The final dataset contains `r nrow(penguins_df)` records with `r ncol(penguins_df)-1` explanatory variables. 
+
+## Visualizing the Data
+
+In order for LDA, QDA and Naive Bayes methods to work optimally, the data must be approximately normally distributed for each variable in each class. Let's take a look: 
+
+```{r adelieDist, fig.height = 3, echo=FALSE}
+
+penguins_df %>%
+  filter(species == 'Adelie') %>%
+  select_if(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, nrow = 1, ncol = 4, scales = "free") +
+    geom_histogram() + 
+  labs(title = 'Distribution of numeric variables for Adelie species')
+
+```
+
+```{r gentooDist, fig.height = 3, echo=FALSE}
+
+penguins_df %>%
+  filter(species == 'Chinstrap') %>%
+  select_if(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, nrow = 1, ncol = 4, scales = "free") +
+    geom_histogram() +
+  labs(title = 'Distribution of numeric variables for Chinstrap species')
+
+```
+
+```{r chinstrapDist, fig.height = 3, echo=FALSE}
+
+penguins_df %>%
+  filter(species == 'Gentoo') %>%
+  select_if(is.numeric) %>% 
+  gather() %>% 
+  ggplot(aes(value)) +
+    facet_wrap(~ key, nrow = 1, ncol = 4,  scales = "free") +
+    geom_histogram() +
+  labs(title = 'Distribution of numeric variables for Gentoo species')
+
+```
+
+**For the most part, the data appear to be normally distributed for each class, so we are set to move forward.** 
+
+
+## Variable Relationships
+
+### Covariances
+
+In LDA, we assume that the covariance matrices are the same between classes. We can use Box's M test to test if the covariance matrices are equal. The null hypothesis is that the covariances are equal across all groups. 
+
+```{r}
+boxm <- heplots::boxM(penguins_df %>% select_if(is.numeric), penguins_df$species)
+boxm
+
+```
+Since the p-value is less than 0.05, we can reject the null hypothesis and we know that the covariance matrices are different for at least one group. **This means that an LDA model will likely not perform as well as a QDA model.**
+
+We can visualize the covariances of the variables against the species to identify which ones are the most different:
+
+```{r covEllipse}
+
+heplots::covEllipses(penguins_df %>% dplyr::select_if(is.numeric), 
+                     penguins_df$species, 
+                     fill = TRUE, 
+                     pooled = FALSE, 
+                     col = c("blue", "red", "orange"), 
+                     variables = c(1:ncol(penguins_df %>% dplyr::select_if(is.numeric))), 
+                     fill.alpha = 0.05)
+
+```
+
+It is evident by the differing shapes of the ellipses that the variance is not equal for some of our variables (ex: `bill_depth`). 
+
+
+### Correlations
+In LDA and QDA, there are no assumptions about the relationships between the variables. However, in Naive Bayes, we assume that all features are independent of one another, ie, no correlations between variables in a class. Let's take a look at the relationships of the numeric variables against each other for each species. 
+
+First, we'll take a look at the **Adelie species**:
+
+```{r corrAdelie, echo=FALSE}
+
+corr_adelie <- penguins_df %>% 
+  filter(species == 'Adelie') %>%
+  select_if(is.numeric) %>%
+  cor()
+corr_adelie[lower.tri(corr_adelie, diag = TRUE)] <- NA
+corr_adelie
+
+```
+
+Next, we'll take a look at the **Chinstrap species**:
+
+
+```{r corr_chin, echo=FALSE}
+
+corr_chin <- penguins_df %>% 
+  filter(species == 'Chinstrap') %>%
+  select_if(is.numeric) %>%
+  cor()
+corr_chin[lower.tri(corr_chin, diag = TRUE)] <- NA
+corr_chin
+
+```
+
+Finally, we'll take a look at the **Gentoo species**: 
+
+```{r corr_gen, echo=FALSE}
+
+corr_gen <- penguins_df %>% 
+  filter(species == 'Gentoo') %>%
+  select_if(is.numeric) %>%
+  cor()
+corr_gen[lower.tri(corr_gen, diag = TRUE)] <- NA
+corr_gen
+
+```
+
+We can see that there is a stronger relationship between many of the variables for the Gentoo species. **We know off the bat if we use all variables in the model that the Naive Bayes method might not perform as well as the other methods.**
+
+We can also visualize these relationships: 
+
+```{r pairwise}
+
+caret::featurePlot(x = penguins_df %>% select_if(is.numeric),
+        y = penguins_df$species,
+        plot = "pairs",
+        auto.key = list(columns = 3)) # add key for species at the top
+
+```
+
+We can see that the Gentoo species is more easily separable from the other two species. Gentoo penguins tend to have a smaller bill depth, larger flipper length, and larger body mass than the other species. 
+
+
+## Normalization of data
+Since discriminant analysis can be affected by the scale and unit of the predictor variables, we will normalize the continuous predictors for the analysis. We will use the scale function, which will standardize the data so that we have a mean of 0 and a standard deviation of 1.
+
+```{r}
+
+final_df <- penguins_df %>% 
+  mutate_at(c("bill_length_mm", "bill_depth_mm", "flipper_length_mm", "body_mass_g"),
+            ~(scale(.) %>% as.vector))
+
+```
+
+# Linear Discriminant Analysis
+First, we'll train an LDA model with 10-fold cross validation. LDA is more stable than Logistic Regression, and is more often used in instances where there are more than 2 outcome classes. It assumes that the predictor variables are (1) normally distributed and (2) that the classes have identical covariance matrices. **We know from our EDA that the data is approximately normally distributed by class, but that the covariance matrices are not the same.** 
+
+```{r lda}
+
+lda_model <- train(data=final_df, 
+                   species ~ ., 
+                   method="lda",
+                   trControl=trainControl(method="cv", number=10))
+
+
+```
+
+We will also create an LDA model that eliminates the `bill_depth` variable, as this was the feature that appeared to have the most unequal variance across species. 
+
+```{r lda2}
+
+lda_model2 <- train(data=final_df, 
+                   species ~ bill_length_mm + flipper_length_mm + body_mass_g, 
+                   method="lda",
+                   trControl=trainControl(method="cv", number=10))
+
+
+```
+
+
+# Quadratic Discriminant Analysis
+Quadratic Discriminant Analysis is similar to LDA, but does *not* assume that the classes have identical covariance matrices. Our conditions are met for QDA, so we will keep all variables in the model. 
+
+```{r qda}
+
+qda_model <- train(data=final_df, 
+                   species ~ ., 
+                   method="qda",
+                   trControl=trainControl(method="cv", number=10))
+
+```
+
+# Naïve Bayes
+A Naive Bayes classifier assumes that the presence of a particular feature in a class is unrelated to the presence of any other feature. **We know from our EDA that some of the variables for the Gentoo species had a high correlation, so we anticipate that the Naive Bayes model won't perform as well as the other two. **
+
+```{r nb}
+
+nb_model <- train(data=final_df, 
+                   species ~ ., 
+                   method="nb",
+                   trControl=trainControl(method="cv", number=10))
+
+```
+
+# Comparison of Models
+
+Finally, we can compare the accuracy and kappa of our 3 models. 
+
+* **Accuracy**: is a measure of how many records were correctly classified by the model
+* **Kappa**: is similar to accuracy, but also "takes into account the possibility of the agreement occurring by chance"
+
+In both cases, the higher the value, the better the classification. 
+
+```{r conf_matrix}
+
+nms <- c('LDA - All Variables', 
+         'LDA - No Bill Depth', 
+         'QDA', 
+         'Naive Bayes')
+acc <- c(lda_model$results$Accuracy, 
+         lda_model2$results$Accuracy, 
+         qda_model$results$Accuracy, 
+         nb_model$results$Accuracy[1])
+kap <- c(lda_model$results$Kappa, 
+         lda_model2$results$Kappa, 
+         qda_model$results$Kappa, 
+         nb_model$results$Kappa[1])
+
+
+data.frame(nms, acc, kap)
+
+```
+
+The results are pretty similar high the board. However, the QDA model wins out at $98.8%$ accuracy and $98.1%$ kappa. The final ranking aligns with that we had expected from our preliminary analysis of the data: QDA, LDA, and finally Naive Bayes. 
+
+# Summary and Conclusions
+In summary: 
+
+* The QDA model ultimately performed the best out of all models. 
+* The LDA model performed second-best because we failed to meet the assumption that the covariance matrices are equal. 
+* The Naive Bayes model performed the worst (although still very well) because we failed to meet the assumption that the variables were independent. 
